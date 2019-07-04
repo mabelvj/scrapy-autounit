@@ -1,5 +1,5 @@
-import re
 import os
+import six
 import zlib
 import pickle
 from pathlib import Path
@@ -11,6 +11,7 @@ from scrapy.item import Item
 from scrapy.crawler import Crawler
 from scrapy.exceptions import NotConfigured
 from scrapy.http import HtmlResponse, Request
+from scrapy.utils.python import to_unicode
 from scrapy.utils.reqser import request_to_dict, request_from_dict
 from scrapy.utils.spider import iter_spider_classes
 from scrapy.utils.project import get_project_settings
@@ -73,13 +74,14 @@ def get_or_create_test_dir(base_path, spider_name, callback_name, extra=None):
 
 
 def add_sample(index, test_dir, test_name, data):
+    encoding = data['response']['encoding']
     fixture_name = 'fixture%s' % str(index)
     filename = fixture_name + '.bin'
     path = test_dir / filename
     data = compress_data(pickle_data(data))
     with open(str(path), 'wb') as outfile:
         outfile.write(data)
-    write_test(test_dir, test_name, fixture_name)
+    write_test(test_dir, test_name, fixture_name, encoding)
 
 
 def compress_data(data):
@@ -94,8 +96,10 @@ def pickle_data(data):
     return pickle.dumps(data, protocol=2)
 
 
-def unpickle_data(data):
-    return pickle.loads(data)
+def unpickle_data(data, encoding):
+    if six.PY2:
+        return pickle.loads(data)
+    return pickle.loads(data, encoding=encoding)
 
 
 def response_to_dict(response):
@@ -103,7 +107,7 @@ def response_to_dict(response):
         'url': response.url,
         'status': response.status,
         'body': response.body,
-        'headers': response.headers,
+        'headers': dict(response.headers),
         'flags': response.flags,
         'encoding': response.encoding,
     }
@@ -132,10 +136,14 @@ def parse_object(_object, spider):
 
 
 def parse_request(request, spider):
+    encoding = request.encoding
     _request = request_to_dict(request, spider=spider)
     if not _request['callback']:
         _request['callback'] = 'parse'
 
+    _request['body'] = to_unicode(_request['body'], encoding)
+
+    _request['headers'] = parse_headers(_request['headers'], encoding)
     clean_headers(_request['headers'], spider.settings)
 
     _meta = {}
@@ -147,6 +155,14 @@ def parse_request(request, spider):
     clean_request(_request, spider.settings)
 
     return _request
+
+
+def parse_headers(headers, encoding):
+    out = {}
+    for key, value in headers.items():
+        key = to_unicode(key, encoding)
+        out[key] = [to_unicode(v, encoding) for v in value]
+    return out
 
 
 def clean_request(request, settings):
@@ -174,11 +190,7 @@ def _clean(data, settings, name):
         data.pop(field, None)
 
 
-def get_valid_identifier(name):
-    return re.sub('[^0-9a-zA-Z_]', '_', name.strip())
-
-
-def write_test(path, test_name, fixture_name):
+def write_test(path, test_name, fixture_name, encoding):
     test_path = path / ('test_%s.py' % (fixture_name))
 
     test_code = '''import unittest
@@ -192,7 +204,7 @@ class AutoUnit(unittest.TestCase):
         file_path = (
             Path(__file__).parent / '{fixture_name}.bin'
         )
-        test = test_generator(file_path.resolve())
+        test = test_generator(file_path.resolve(), '{encoding}')
         test(self)
 
 
@@ -201,17 +213,33 @@ if __name__ == '__main__':
 '''.format(
         test_name=test_name,
         fixture_name=fixture_name,
+        encoding=encoding,
     )
 
     with open(str(test_path), 'w') as f:
         f.write(test_code)
 
 
-def test_generator(fixture_path):
+def binary_check(obj, encoding):
+    if isinstance(obj, (dict, Item)):
+        for key, value in obj.items():
+            obj[key] = binary_check(value, encoding)
+
+    if isinstance(obj, list):
+        for index, item in enumerate(obj):
+            obj[index] = binary_check(item, encoding)
+
+    if isinstance(obj, six.binary_type):
+        obj = obj.decode(encoding)
+
+    return obj
+
+
+def test_generator(fixture_path, encoding):
     with open(str(fixture_path), 'rb') as f:
         data = f.read()
 
-    data = unpickle_data(decompress_data(data))
+    data = unpickle_data(decompress_data(data), encoding)
 
     spider_name = data.get('spider_name')
     if not spider_name:  # legacy tests
@@ -269,6 +297,10 @@ def test_generator(fixture_path):
                 clean_request(fixture_data, settings)
             else:
                 clean_item(fixture_data, settings)
+
+            if settings.get('AUTOUNIT_CROSS_PYTHON_VERSIONS', default=False):
+                fixture_data = binary_check(fixture_data, encoding)
+                _object = binary_check(_object, encoding)
 
             _object = parse_object(_object, spider)
             self.assertEqual(fixture_data, _object, 'Not equal!')
