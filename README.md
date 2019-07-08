@@ -131,5 +131,9 @@ Sets a list of settings names to be recorded in the generated test case.
 This is an extra string element to add to the test path and name between the spider name and callback name. You can use this to separate tests from the same spider with different configurations.  
 `Default: None`
 
+**AUTOUNIT_CROSS_PYTHON_VERSIONS**  
+Enable this setting if you're going to use cross python versions fixtures, for example generating your tests in Python 2 and running them in Python 3, otherwise this setting should be off.  
+`Default: False`
+
 ---
 **Note**: Remember that you can always apply any of these settings per spider including them in your spider's `custom_settings` class attribute - see https://docs.scrapy.org/en/latest/topics/settings.html#settings-per-spider.
