@@ -220,19 +220,23 @@ if __name__ == '__main__':
         f.write(test_code)
 
 
-def binary_check(obj, encoding):
-    if isinstance(obj, (dict, Item)):
-        for key, value in obj.items():
-            obj[key] = binary_check(value, encoding)
+def binary_check(fx_obj, cb_obj, encoding):
+    if isinstance(cb_obj, (dict, Item)):
+        fx_obj = {
+            key: binary_check(value, cb_obj[key], encoding)
+            for key, value in fx_obj.items()
+        }
 
-    if isinstance(obj, list):
-        for index, item in enumerate(obj):
-            obj[index] = binary_check(item, encoding)
+    if isinstance(cb_obj, list):
+        fx_obj = [
+            binary_check(fxitem, cbitem, encoding)
+            for fxitem, cbitem in zip(fx_obj, cb_obj)
+        ]
 
-    if isinstance(obj, six.binary_type):
-        obj = obj.decode(encoding)
+    if isinstance(cb_obj, six.binary_type):
+        fx_obj = fx_obj.encode(encoding)
 
-    return obj
+    return fx_obj
 
 
 def test_generator(fixture_path, encoding):
@@ -256,7 +260,7 @@ def test_generator(fixture_path, encoding):
     crawler = Crawler(spider_cls, settings)
 
     def test(self):
-        fixture_objects = data['result']
+        fx_result = data['result']
 
         request = request_from_dict(data['request'], spider)
         response = HtmlResponse(request=request, **data['response'])
@@ -291,18 +295,19 @@ def test_generator(fixture_path, encoding):
         if isinstance(result, (Item, Request, dict)):
             result = [result]
 
-        for index, _object in enumerate(result):
-            fixture_data = fixture_objects[index]['data']
-            if fixture_objects[index].get('type') == 'request':
-                clean_request(fixture_data, settings)
+        # Iterate over the callback result and the recorded result at once
+        for cb_obj, fx_item in zip(result, fx_result):
+            fx_obj = fx_item['data']
+            if fx_item['type'] == 'request':
+                clean_request(fx_obj, settings)
             else:
-                clean_item(fixture_data, settings)
+                clean_item(fx_obj, settings)
+
+            cb_obj = parse_object(cb_obj, spider)
 
             if settings.get('AUTOUNIT_CROSS_PYTHON_VERSIONS', default=False):
-                fixture_data = binary_check(fixture_data, encoding)
-                _object = binary_check(_object, encoding)
+                fx_obj = binary_check(fx_obj, cb_obj, encoding)
 
-            _object = parse_object(_object, spider)
-            self.assertEqual(fixture_data, _object, 'Not equal!')
+            self.assertEqual(fx_obj, cb_obj, 'Not equal!')
 
     return test
