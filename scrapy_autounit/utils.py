@@ -260,6 +260,7 @@ def test_generator(fixture_path, encoding):
 
     def test(self):
         fx_result = data['result']
+        fx_version = data['python_version']
 
         request = request_from_dict(data['request'], spider)
         response = HtmlResponse(request=request, **data['response'])
@@ -310,7 +311,7 @@ def test_generator(fixture_path, encoding):
             else:
                 clean_item(fx_obj, settings)
 
-            if settings.get('AUTOUNIT_CROSS_PYTHON_VERSIONS', default=False):
+            if fx_version == 2 and six.PY3:
                 fx_obj = binary_check(fx_obj, cb_obj, encoding)
 
             cb_obj = parse_object(cb_obj, spider)
