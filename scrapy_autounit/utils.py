@@ -11,7 +11,7 @@ from scrapy.item import Item
 from scrapy.crawler import Crawler
 from scrapy.exceptions import NotConfigured
 from scrapy.http import HtmlResponse, Request
-from scrapy.utils.python import to_unicode
+from scrapy.utils.python import to_bytes
 from scrapy.utils.reqser import request_to_dict, request_from_dict
 from scrapy.utils.spider import iter_spider_classes
 from scrapy.utils.project import get_project_settings
@@ -21,6 +21,9 @@ from scrapy.utils.conf import (
     closest_scrapy_cfg,
     build_component_list,
 )
+
+
+NO_ITEM_MARKER = object()
 
 
 def get_project_dir():
@@ -136,14 +139,10 @@ def parse_object(_object, spider):
 
 
 def parse_request(request, spider):
-    encoding = request.encoding
     _request = request_to_dict(request, spider=spider)
     if not _request['callback']:
         _request['callback'] = 'parse'
 
-    _request['body'] = to_unicode(_request['body'], encoding)
-
-    _request['headers'] = parse_headers(_request['headers'], encoding)
     clean_headers(_request['headers'], spider.settings)
 
     _meta = {}
@@ -155,14 +154,6 @@ def parse_request(request, spider):
     clean_request(_request, spider.settings)
 
     return _request
-
-
-def parse_headers(headers, encoding):
-    out = {}
-    for key, value in headers.items():
-        key = to_unicode(key, encoding)
-        out[key] = [to_unicode(v, encoding) for v in value]
-    return out
 
 
 def clean_request(request, settings):
@@ -233,6 +224,14 @@ def binary_check(fx_obj, cb_obj, encoding):
             for fxitem, cbitem in zip(fx_obj, cb_obj)
         ]
 
+    if isinstance(cb_obj, Request):
+        headers = {}
+        for key, value in fx_obj['headers'].items():
+            key = to_bytes(key, encoding)
+            headers[key] = [to_bytes(v, encoding) for v in value]
+        fx_obj['headers'] = headers
+        fx_obj['body'] = to_bytes(fx_obj['body'], encoding)
+
     if isinstance(cb_obj, six.binary_type):
         fx_obj = fx_obj.encode(encoding)
 
@@ -295,18 +294,26 @@ def test_generator(fixture_path, encoding):
         if isinstance(result, (Item, Request, dict)):
             result = [result]
 
-        # Iterate over the callback result and the recorded result at once
-        for cb_obj, fx_item in zip(result, fx_result):
+        for cb_obj, fx_item in six.moves.zip_longest(
+            result, fx_result, fillvalue=NO_ITEM_MARKER
+        ):
+            if any(item == NO_ITEM_MARKER for item in (cb_obj, fx_item)):
+                raise AssertionError(
+                    "The fixture's data length doesn't match with the current "
+                    "callback's output length, you might need to generate "
+                    "your fixtures again."
+                )
+
             fx_obj = fx_item['data']
             if fx_item['type'] == 'request':
                 clean_request(fx_obj, settings)
             else:
                 clean_item(fx_obj, settings)
 
-            cb_obj = parse_object(cb_obj, spider)
-
             if settings.get('AUTOUNIT_CROSS_PYTHON_VERSIONS', default=False):
                 fx_obj = binary_check(fx_obj, cb_obj, encoding)
+
+            cb_obj = parse_object(cb_obj, spider)
 
             self.assertEqual(fx_obj, cb_obj, 'Not equal!')
 
