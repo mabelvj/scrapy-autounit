@@ -23,9 +23,11 @@ class MySpider(scrapy.Spider):
 
     def start_requests(self):
         {start_requests}
-
+    
     def parse(self, response):
         {parse}
+
+    {add_method}
 '''
 
 
@@ -72,6 +74,7 @@ class CaseSpider(object):
             dest.write('SPIDER_MODULES = ["myproject"]\n')
         self._start_requests = None
         self._parse = None
+        self._add_method = ''
         self._spider_name = 'myspider'
         self._imports = ''
         self._custom_settings = ''
@@ -97,12 +100,16 @@ class CaseSpider(object):
     def parse(self, string):
         self._parse = string
 
+    def add_method(self, string):
+        self._add_method = string
+
     def _write_spider(self):
         with open(os.path.join(self.proj_dir, 'myspider.py'), 'w') as dest:
             dest.write(SPIDER_TEMPLATE.format(
                 name=self._spider_name,
                 start_requests=self._start_requests,
                 parse=self._parse,
+                add_method=self._add_method,
                 imports=self._imports,
                 custom_settings=self._custom_settings,
             ))
@@ -132,6 +139,8 @@ class CaseSpider(object):
             stderr=subprocess.PIPE
         )
         check_process('Running spider failed!', result)
+        print(''.join(result['stdout'].decode()))
+        print(''.join(result['stderr'].decode()))
         if not any(
             any(f.endswith('.py') and f != '__init__.py' for f in files)
             for _, _, files in os.walk(os.path.join(self.dir, 'autounit'))
@@ -256,4 +265,87 @@ class TestRecording(unittest.TestCase):
                 yield {'data': response}
             ''')
             spider.record()
+            spider.test()
+
+    def test_spider_attributes(self):
+        with CaseSpider() as spider:
+            spider.start_requests("""
+                self._base_url = 'www.nothing.com'
+                yield scrapy.Request('data:text/plain,')
+            """)
+            spider.parse("""
+                self.param = 1
+                yield {'a': 4}
+            """)
+            spider.record()
+            spider.test()
+
+        with CaseSpider() as spider:
+            spider.start_requests("""
+                self._base_url = 'www.nothing.com'
+                yield scrapy.Request('data:text/plain,')
+            """)
+            spider.parse("""
+                self.param = 1
+                yield {'a': 4}
+            """)
+            spider.record(settings=dict(
+                AUTOUNIT_EXCLUDED_FIELDS='_base_url',
+                AUTOUNIT_INCLUDED_SETTINGS='AUTOUNIT_EXCLUDED_FIELDS'))
+            spider.test()
+
+    def test_spider_attributes_recursive(self):
+        # Recursive calls including private variables
+        with CaseSpider() as spider:
+            spider.start_requests("""
+                self.__page = 0
+                self.param = 0
+                self._base_url = 'www.nothing.com'
+                yield scrapy.Request('data:text/plain,', callback=self.parse)
+            """)
+            spider.parse("""
+                self.param += 1
+                reqs = self.parse_item()
+                for r in reqs:
+                    yield r
+            """)
+            spider.add_method("""def parse_item(self):
+                self.__page += 1
+                if self.__page > 3:
+                    self.end = True
+                    yield {'a': 4}
+                    return
+                for i in range(3):
+                    yield {'b': '%s_%s;'%(self.__page, i)}
+                yield scrapy.Request('data:,%s;'%(self.__page),
+                                      callback=self.parse)
+                                         """)
+            spider.record()
+            spider.test()
+
+        # Recursive calls including private variables using getattr
+        with CaseSpider() as spider:
+            spider.start_requests("""
+                self.param = 0
+                self._base_url = 'www.nothing.com'
+                yield scrapy.Request('data:text/plain,', callback=self.parse)
+            """)
+            spider.parse("""
+                self.param += 1
+                reqs = self.parse_item()
+                for r in reqs:
+                    yield r
+            """)
+            spider.add_method("""def parse_item(self):
+                self.__page = getattr(self, '_MySpider__page', 0) + 1
+                if self.__page > 3:
+                    self.end = True
+                    yield {'a': 4}
+                    return
+                for i in range(3):
+                    yield {'b': '%s_%s;'%(self.__page, i)}
+                yield scrapy.Request('data:,%s;'%(self.__page),
+                                      callback=self.parse)
+                                         """)
+
             spider.test()
